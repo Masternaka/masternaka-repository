@@ -1,5 +1,20 @@
 {
   "apps": [
-    {"repository": "Masternaka/MintTweaks", "package": "minttweaks", "architecture": "all"}
+    {
+      "repository": "Masternaka/MintTweaks",
+      "package": "minttweaks",
+      "architecture": "all"
+    },
+    {
+      "repository": "imputnet/helium-linux",
+      "package": "helium-bin",
+      "architecture": "amd64"
+    },
+    {
+      "repository": "zen-browser/desktop",
+      "package": "zen-browser",
+      "architecture": "amd64",
+      "recipe": "zen-tar"
+    }
   ]
 }

@@ -36,7 +36,7 @@ class CollectorTests(unittest.TestCase):
         self.assertNotIn('token', self.fetch.call_args_list[1].kwargs)
 
     def test_duplicate_apps_and_bad_configuration_rejected(self):
-        for config in ({'apps': []}, {'apps': [self.app, self.app]}, {'apps': [{**self.app, 'architecture': 'amd64'}]}, {'apps': [self.app], 'extra': True}, {'apps': [{**self.app, 'package': '../evil'}]}):
+        for config in ({'apps': []}, {'apps': [self.app, self.app]}, {'apps': [{**self.app, 'architecture': 'arm64'}]}, {'apps': [self.app], 'extra': True}, {'apps': [{**self.app, 'package': '../evil'}]}):
             with self.subTest(config=config):
                 self.config.write_text(json.dumps(config))
                 with self.assertRaises(CollectionError):
@@ -59,6 +59,39 @@ class CollectorTests(unittest.TestCase):
                 with self.assertRaises(CollectionError):
                     self.run_collection()
                 self.assertFalse(self.output.exists())
+
+    def test_mixed_snapshot_selects_helium_amd64_and_checks_exact_architecture(self):
+        helium = {'repository': 'imputnet/helium-linux', 'package': 'helium-bin', 'architecture': 'amd64'}
+        self.config.write_text(json.dumps({'apps': [self.app, helium]}))
+        filename = 'helium-bin_0.20.1.1-1_amd64.deb'
+        data = b'fake-helium-amd64-package'
+        asset = {'name': filename, 'digest': 'sha256:' + hashlib.sha256(data).hexdigest(), 'browser_download_url': 'https://github.com/imputnet/helium-linux/releases/download/0.20.1.1/' + filename}
+        arm_asset = {**asset, 'name': 'helium-bin_0.20.1.1-1_arm64.deb'}
+        release = {'draft': False, 'prerelease': False, 'tag_name': '0.20.1.1', 'assets': [arm_asset, asset]}
+        def fetch(url, **kwargs):
+            if kwargs.get('api'):
+                return json.dumps(release if '/helium-linux/' in url else self.release).encode()
+            return data if '/helium-linux/' in url else self.data
+        self.fetch.side_effect = fetch
+        def identity(path):
+            if path.name == filename:
+                return {'Package': 'helium-bin', 'Architecture': 'amd64', 'Version': '0.20.1.1-1'}
+            return {'Package': 'minttweaks', 'Architecture': 'all', 'Version': '0.1.2+git3.1.abcdef'}
+        self.identity.side_effect = identity
+        manifest = self.run_collection()
+        self.assertEqual([app['architecture'] for app in manifest], ['all', 'amd64'])
+        self.assertEqual(manifest[1]['asset'], filename)
+        self.assertEqual((self.output / filename).read_bytes(), data)
+        self.assertFalse((self.output / arm_asset['name']).exists())
+
+        # A wrong architecture in the second package rejects the entire snapshot,
+        # including the valid MintTweaks package already collected.
+        import shutil
+        shutil.rmtree(self.output)
+        self.identity.side_effect = lambda path: {**identity(path), 'Architecture': 'arm64'} if path.name == filename else identity(path)
+        with self.assertRaisesRegex(CollectionError, 'identity/version mismatch'):
+            self.run_collection()
+        self.assertFalse(self.output.exists())
 
     def test_missing_or_ambiguous_asset_and_prerelease_rejected(self):
         for assets in ([], [self.asset, self.asset]):

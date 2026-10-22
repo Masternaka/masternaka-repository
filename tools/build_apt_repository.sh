@@ -17,7 +17,8 @@ declare -A identities
 for package in "${packages[@]}"; do
   name=$(dpkg-deb -f "$package" Package)
   [[ "$name" =~ ^[a-z0-9][a-z0-9+.-]+$ ]]
-  [[ $(dpkg-deb -f "$package" Architecture) == all ]]
+  architecture=$(dpkg-deb -f "$package" Architecture)
+  [[ "$architecture" == all || "$architecture" == amd64 ]]
   [[ -z "${identities[$name]+present}" ]]
   identities[$name]=1
 done
@@ -52,7 +53,7 @@ chmod 644 "$output/pool/"*.deb
   # Keep Release outside the tree being hashed.
   apt-ftparchive -o APT::FTPArchive::Release::Origin=Masternaka \
     -o APT::FTPArchive::Release::Label=Masternaka \
-    -o APT::FTPArchive::Release::Architectures=all \
+    -o APT::FTPArchive::Release::Architectures="amd64 all" \
     -o APT::FTPArchive::Release::Description='Masternaka selected applications' \
     release . > "$scratch/Release"
 )

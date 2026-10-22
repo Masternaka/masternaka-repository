@@ -7,6 +7,9 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
+
+from tools.package_zen import build_package, debian_version
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -34,15 +37,20 @@ def load_config(path):
         raise CollectionError("Allowlist must not be empty")
     repositories, packages = set(), set()
     for app in apps:
-        if not isinstance(app, dict) or set(app) != {"repository", "package", "architecture"}:
+        if not isinstance(app, dict) or not {"repository", "package", "architecture"}.issubset(app) or set(app) - {"repository", "package", "architecture", "recipe"}:
             raise CollectionError("Unexpected application fields")
         repo, package = app["repository"], app["package"]
         if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
             raise CollectionError("Invalid repository")
         if not isinstance(package, str) or not re.fullmatch(r"[a-z0-9][a-z0-9+.-]+", package):
             raise CollectionError("Invalid Debian package")
-        if app["architecture"] != "all":
-            raise CollectionError("Only Architecture: all is supported")
+        if app["architecture"] not in ("all", "amd64"):
+            raise CollectionError("Only architectures all and amd64 are supported")
+        recipe = app.get("recipe", "deb")
+        if recipe not in ("deb", "zen-tar"):
+            raise CollectionError("Unsupported recipe")
+        if recipe == "zen-tar" and (repo, package, app["architecture"]) != ("zen-browser/desktop", "zen-browser", "amd64"):
+            raise CollectionError("zen-tar is restricted to the Zen amd64 upstream")
         if repo.lower() in repositories or package in packages:
             raise CollectionError("Duplicate repository or package")
         repositories.add(repo.lower())
@@ -92,7 +100,7 @@ def package_identity(path):
     return fields
 
 
-def collect(config, output, token=None, fetch=request_bytes, identity=package_identity):
+def collect(config, output, token=None, fetch=request_bytes, identity=package_identity, builder=build_package):
     apps = load_config(config)
     output = Path(output)
     if output.exists():
@@ -102,6 +110,7 @@ def collect(config, output, token=None, fetch=request_bytes, identity=package_id
     try:
         for app in apps:
             repo, package = app["repository"], app["package"]
+            architecture = app["architecture"]
             release = json.loads(fetch(f"https://api.github.com/repos/{repo}/releases/latest", token=token, api=True))
             if not isinstance(release, dict) or release.get("draft") is not False or release.get("prerelease") is not False:
                 raise CollectionError(f"{repo}: latest stable release unavailable")
@@ -109,8 +118,9 @@ def collect(config, output, token=None, fetch=request_bytes, identity=package_id
             assets = release.get("assets")
             if not isinstance(tag, str) or not tag or not isinstance(assets, list):
                 raise CollectionError(f"{repo}: malformed release")
-            pattern = re.compile(rf"{re.escape(package)}_([^/\\\s]+)_all\.deb")
-            candidates = [asset for asset in assets if isinstance(asset, dict) and isinstance(asset.get("name"), str) and pattern.fullmatch(asset["name"])]
+            recipe = app.get("recipe", "deb")
+            pattern = re.compile(rf"{re.escape(package)}_([^/\\\s]+)_{architecture}\.deb")
+            candidates = [asset for asset in assets if isinstance(asset, dict) and isinstance(asset.get("name"), str) and (asset["name"] == "zen.linux-x86_64.tar.xz" if recipe == "zen-tar" else pattern.fullmatch(asset["name"]))]
             if len(candidates) != 1:
                 raise CollectionError(f"{repo}: expected exactly one matching .deb asset")
             asset = candidates[0]
@@ -125,13 +135,21 @@ def collect(config, output, token=None, fetch=request_bytes, identity=package_id
             data = fetch(url, api=False)
             if hashlib.sha256(data).hexdigest() != digest.split(":")[1].lower():
                 raise CollectionError(f"{repo}: SHA-256 mismatch")
-            path = output / asset["name"]
-            path.write_bytes(data)
+            if recipe == "zen-tar":
+                filename_version = debian_version(tag)
+                path = output / f"{package}_{filename_version}_{architecture}.deb"
+                with tempfile.TemporaryDirectory(prefix="zen-upstream-") as temporary:
+                    archive = Path(temporary) / asset["name"]
+                    archive.write_bytes(data)
+                    builder(archive, tag, path)
+            else:
+                filename_version = pattern.fullmatch(asset["name"]).group(1)
+                path = output / asset["name"]
+                path.write_bytes(data)
             metadata = identity(path)
-            filename_version = pattern.fullmatch(asset["name"]).group(1)
-            if metadata.get("Package") != package or metadata.get("Architecture") != "all" or metadata.get("Version") != filename_version:
+            if metadata.get("Package") != package or metadata.get("Architecture") != architecture or metadata.get("Version") != filename_version:
                 raise CollectionError(f"{repo}: package identity/version mismatch")
-            manifest.append({"repository": repo, "tag": tag, "package": package, "architecture": "all", "version": filename_version, "asset": asset["name"], "url": url, "digest": digest.lower()})
+            manifest.append({"repository": repo, "tag": tag, "package": package, "architecture": architecture, "recipe": recipe, "version": filename_version, "asset": asset["name"], "url": url, "digest": digest.lower(), "deb": {"filename": path.name, "version": filename_version, "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}})
         (output / "manifest.json").write_text(json.dumps({"apps": manifest}, indent=2) + "\n")
     except Exception:
         # A failed app must never leave a publishable partial snapshot.

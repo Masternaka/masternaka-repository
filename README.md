@@ -1,7 +1,7 @@
 # masternaka-repository
 
 Dépôt APT signé central des applications choisies par Masternaka. La liste
-autorisée est définie dans `apps.json` ; elle contient initialement MintTweaks.
+autorisée est définie dans `apps.json` ; elle contient MintTweaks (`all`), Helium (`amd64`) et Zen (`amd64`).
 Il ne s’agit pas d’un miroir de tous les logiciels Linux Mint.
 
 Le workflow peut publier un dépôt APT plat à l’adresse
@@ -17,9 +17,10 @@ Aucune clé ni secret de signature n’est utilisé pour les tests de pull reque
 
 À chaque publication, le collecteur consulte la dernière release **standard**
 (non brouillon, non préversion) de chaque application autorisée, puis exige
-exactement un fichier `nom-du-paquet_VERSION_all.deb`, avec le digest SHA-256
-fourni par GitHub. Il vérifie le téléchargement, le nom Debian, l’architecture
-`all` et la version interne du paquet. Une application manquante, un digest absent
+exactement l’asset correspondant à sa recette, avec le digest SHA-256 fourni par
+GitHub : un fichier `nom-du-paquet_VERSION_ARCHITECTURE.deb` pour la recette
+`deb` par défaut, ou `zen.linux-x86_64.tar.xz` pour la recette Zen dédiée. Il vérifie le téléchargement, le nom Debian, l’architecture
+configurée (`all` ou `amd64`) et la version interne du paquet. Une application manquante, un digest absent
 ou une erreur font échouer l’ensemble : aucun dépôt partiel n’est publié.
 
 La collecte a lieu dans le verrou de publication, afin de lire les releases
@@ -28,7 +29,9 @@ sérialisées ; GitHub peut remplacer une ancienne exécution en attente par une
 plus récente. Les commits qui ne sont plus la tête de `main` ne sont pas déployés.
 Le dépôt conserve uniquement le paquet courant de chaque application ; les
 anciens paquets restent dans les Releases de leurs dépôts d’origine. Le fichier
-public `manifest.json` expose dépôt source, tag, version, nom d’asset, URL et digest.
+public `manifest.json` expose dépôt source, tag, recette, version, nom d’asset,
+URL et digest amont. Son objet `deb` indique séparément nom, version et SHA-256
+du paquet réellement distribué, y compris après conversion de l’archive Zen.
 
 Ce dépôt distribue des instantanés de développement. La vérification des
 signatures et le téléchargement APT ne remplacent pas un essai réel de chaque
@@ -48,7 +51,7 @@ bash -n tools/build_apt_repository.sh
 
 Le script de signature requiert Bash 4 ou ultérieur (fourni par Ubuntu ; le Bash 3
 système de macOS ne suffit pas pour son exécution). L’intégration de signature
-et de téléchargement APT nécessite Ubuntu avec
+et de téléchargement APT nécessite Ubuntu 24.04 avec
 `apt-utils`, `gnupg` et `dpkg-deb` ; elle s’exécute dans Actions avant déploiement
 une fois la configuration ci-dessous activée.
 
@@ -112,7 +115,8 @@ les permissions `contents: read`, `pages: write` et `id-token: write` ; la clé
 privée n’est fournie qu’à l’étape de signature.
 
 Avant tout déploiement, le script vérifie les noms des paquets, leur unicité et leur architecture
-`all`, puis l’empreinte primaire de la clé importée. Il génère `Packages`,
+`all` ou `amd64`, puis l’empreinte primaire de la clé importée. Le champ
+`Architectures` du fichier Release annonce `amd64 all`. Il génère `Packages`,
 `Packages.gz`, `Release`, `InRelease` et `Release.gpg`, avec signatures SHA-256.
 Seule la clé publique `masternaka-archive-keyring.asc` rejoint le site et l’artefact
 Pages. Le répertoire GnuPG et le fichier de phrase secrète sont temporaires,
@@ -141,6 +145,10 @@ sudo install -m 0644 /tmp/masternaka.asc /etc/apt/keyrings/masternaka.asc
 printf '%s\n' 'deb [signed-by=/etc/apt/keyrings/masternaka.asc] https://masternaka.github.io/masternaka-repository/ ./' | sudo tee /etc/apt/sources.list.d/masternaka.list
 sudo apt update
 sudo apt install minttweaks
+# Pour Helium sur un système amd64 :
+sudo apt install helium-bin
+# Pour Zen, empaqueté par ce dépôt sur amd64 :
+sudo apt install zen-browser
 ```
 
 `Signed-By` limite cette clé à ce dépôt ; n’utilisez pas `apt-key` ou
@@ -177,6 +185,73 @@ Si la clé est compromise, désactivez la publication, révoquez-la, prévenez l
 utilisateurs et remplacez-la avec une nouvelle empreinte vérifiée. Révoquer une
 clé ne suffit pas à retirer automatiquement sa copie chez tous les clients.
 
+## Helium pour Linux Mint amd64
+
+Helium provient du dépôt tiers `imputnet/helium-linux`. Le collecteur reprend le
+paquet Debian officiel `helium-bin` de sa dernière Release standard, uniquement
+pour `amd64` ; il ne compile ni Chromium ni Helium. Les assets `arm64` ne sont pas
+sélectionnés. Le paquet MintTweaks indépendant de l’architecture reste distribué
+en parallèle.
+
+Pour la machine Linux Mint 22.3 amd64 visée, l’installation s’effectue avec
+`sudo apt install helium-bin` après activation de la signature, réussite du
+déploiement Pages et ajout du dépôt sur le client. La sélection du paquet et ses
+vérifications cryptographiques ne constituent pas une validation de son exécution
+sous Linux Mint 22.3 ; aucun essai réel du navigateur n’est couvert par ces tests.
+La disponibilité des dépendances doit être confirmée par APT sur le client.
+
+## Zen pour Linux Mint amd64
+
+Zen ne fournit pas le même asset Debian que Helium dans la release utilisée :
+la recette `zen-tar` transforme l’archive officielle `zen.linux-x86_64.tar.xz` du
+dépôt `zen-browser/desktop` en un paquet **non officiel** `zen-browser`. Elle ne
+compile pas le navigateur. Un tag tel que `1.23.4b` devient
+`1.23.4b+masternaka1` ; seuls les tags numériques à points, avec un `v` initial
+et un `b` final facultatifs, sont acceptés.
+
+À outils et dépendances identiques, une même archive produit un `.deb` reproductible :
+les dates sont normalisées à l’époque Unix, la locale et le fuseau sont fixés,
+et la compression xz utilise des paramètres et un nombre de threads fixes.
+Un test d’intégration Linux construit deux fois un petit paquet de test à des
+instants différents et compare les octets ; il est explicitement ignoré sur macOS.
+La constante `RECIPE_REVISION` de `tools/package_zen.py` vaut `1` : toute modification
+de recette, d’outils ou de base Ubuntu qui change les octets d’un paquet pour
+le même tag doit augmenter cette révision (`+masternaka2`, puis les suivantes).
+Le numéro de version ne doit jamais désigner deux paquets différents.
+
+Le paquet conserve l’arborescence amont complète sous `/opt/zen-browser`, dont
+les mentions de licence présentes dans les fichiers ou les ressources intégrées.
+Le fichier `/usr/share/doc/zen-browser/copyright` indique la provenance et renvoie
+aux informations de licence amont ; il n’attribue pas de nouvelle licence au
+navigateur. Le lancement passe par `/usr/bin/zen-browser`, avec transmission des
+arguments, et utilise l’icône amont. La politique `DisableAppUpdate` est fusionnée
+dans `distribution/policies.json` sans supprimer les autres paramètres : les
+mises à jour de cette copie installée passent par APT.
+
+L’extraction refuse les chemins absolus, traversées, liens sortants, liens durs,
+fichiers spéciaux et doublons, et limite à 20 000 entrées et 2 Gio décompressés.
+Les fichiers exécutables sont contrôlés comme ELF x86_64 sans exécution. La
+construction Ubuntu 24.04 analyse les bibliothèques avec `readelf` et
+`dpkg-shlibdeps`, en tenant compte des bibliothèques incluses. Les dépendances
+partagées sont produites par cet outil, et non déduites du nom de l’archive.
+Avant signature, Actions simule `apt-get -s install` avec les sources Ubuntu et
+vérifie le profil avec `apparmor_parser -Q -T`. Aucune commande `ldd` ni aucun
+binaire du navigateur n’est exécuté pendant ces contrôles.
+
+Le profil AppArmor est limité aux chemins `/opt/zen-browser/zen` et
+`/opt/zen-browser/zen-bin` : le modèle `flags=(unconfined)` autorise `userns`
+pour ces exécutables sans modifier un réglage global `sysctl`. L’installation
+charge ou recharge ce profil si AppArmor est actif ; la suppression tente de le
+retirer sans échouer si AppArmor n’est pas disponible. Ce profil n’ajoute pas de
+confinement propre au navigateur ; il permet à son mécanisme de sandbox de créer
+les espaces de noms requis sur les systèmes où cette politique s’applique.
+
+Après activation et ajout du dépôt : `sudo apt install zen-browser`.
+La suppression du paquet ne supprime pas les profils personnels du navigateur.
+La simulation APT et l’analyse statique ne valident ni le lancement graphique,
+ni le sandbox réel, ni la migration des profils sous Linux Mint 22.3. Ces essais
+restent à effectuer sur la machine cible.
+
 ## Ajouter une application
 
 Ajoutez une entrée explicite dans `apps.json`, par exemple :
@@ -185,18 +260,24 @@ Ajoutez une entrée explicite dans `apps.json`, par exemple :
 {
   "apps": [
     {"repository": "Masternaka/MintTweaks", "package": "minttweaks", "architecture": "all"},
+    {"repository": "imputnet/helium-linux", "package": "helium-bin", "architecture": "amd64"},
+    {"repository": "zen-browser/desktop", "package": "zen-browser", "architecture": "amd64", "recipe": "zen-tar"},
     {"repository": "Masternaka/AutreApplication", "package": "autre-application", "architecture": "all"}
   ]
 }
 ```
 
-Cet exemple de deuxième application est fictif : ne l’ajoutez qu’après création
+Cet exemple de quatrième application est fictif : ne l’ajoutez qu’après création
 de sa release et de son paquet. Le collecteur n’explore pas vos autres dépôts.
-Chaque application doit publier une release standard avec un seul asset
-`PACKAGE_VERSION_all.deb`, posséder un digest GitHub `sha256:` et déclarer dans le
-paquet Debian les mêmes `Package`, `Version` et `Architecture: all`. Les clés JSON
+Pour la recette `deb` (valeur implicite si `recipe` est absent), chaque application
+doit publier une release standard avec un seul asset
+`PACKAGE_VERSION_ARCHITECTURE.deb`, posséder un digest GitHub `sha256:` et déclarer dans le
+paquet Debian les mêmes `Package`, `Version` et architecture que la configuration. Les clés JSON
 inconnues, listes vides et doublons de dépôt ou de paquet sont rejetés. Les
-architectures spécifiques comme `amd64` ne sont pas prises en charge ici.
+seules architectures acceptées sont `all` et `amd64` ; `arm64` et les autres
+architectures sont refusées. La seule autre recette acceptée est `zen-tar`,
+strictement réservée au triplet `zen-browser/desktop`, `zen-browser`, `amd64`.
+Les commandes ou recettes arbitraires dans `apps.json` ne sont pas autorisées.
 
 Une fois le fichier envoyé sur `main`, un nouveau dépôt signé complet est généré.
 Retirer une entrée retire ce paquet du prochain instantané ; cela ne désinstalle

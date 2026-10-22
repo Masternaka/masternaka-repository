@@ -14,10 +14,14 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
+      - name: Install Debian integration test tool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dpkg-dev
       - name: Validate without signing secrets
         run: |
           python3 -m unittest discover -s tests -v
@@ -32,8 +36,8 @@ jobs:
       cancel-in-progress: false
     needs: test
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.APT_REPOSITORY_ENABLED == 'true'
-    runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: read
       pages: write
@@ -59,12 +63,22 @@ jobs:
         if: steps.current.outputs.matches == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends apt-utils gnupg
+          sudo apt-get install -y --no-install-recommends apt-utils gnupg dpkg-dev binutils apparmor libgtk-3-dev libasound2-dev libxt-dev libx11-xcb-dev libxcb-shm0-dev
       - name: Collect current stable releases
         if: steps.current.outputs.matches == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 tools/collect_packages.py --output "$RUNNER_TEMP/collected"
+        run: python3 -m tools.collect_packages --output "$RUNNER_TEMP/collected"
+      - name: Validate package dependencies and AppArmor syntax
+        if: steps.current.outputs.matches == 'true'
+        run: |
+          # Dependency resolution only: no package maintainer scripts or upstream
+          # browser executable is run during this simulation.
+          for package in "$RUNNER_TEMP/collected/"*.deb; do
+            sudo apt-get -s install "$package"
+          done
+          python3 -c 'from tools.package_zen import PROFILE; print(PROFILE)' > "$RUNNER_TEMP/zen.apparmor"
+          sudo apparmor_parser -Q -T "$RUNNER_TEMP/zen.apparmor"
       - name: Sign and verify every package with APT
         if: steps.current.outputs.matches == 'true'
         env:
