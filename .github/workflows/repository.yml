@@ -1,0 +1,97 @@
+name: Signed APT repository
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate without signing secrets
+        run: |
+          python3 -m unittest discover -s tests -v
+          python3 -c 'from tools.collect_packages import load_config; load_config("apps.json")'
+          bash -n tools/build_apt_repository.sh
+
+  publish:
+    # Collect inside the Pages lock, not from an older prebuilt artifact.
+    # GitHub may replace an older pending publication with a newer one.
+    concurrency:
+      group: masternaka-repository-pages
+      cancel-in-progress: false
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.APT_REPOSITORY_ENABLED == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check current main
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          latest=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha')
+          if [[ "$latest" == "$GITHUB_SHA" ]]; then
+            echo 'matches=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'matches=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install repository tools
+        if: steps.current.outputs.matches == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends apt-utils gnupg
+      - name: Collect current stable releases
+        if: steps.current.outputs.matches == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/collect_packages.py --output "$RUNNER_TEMP/collected"
+      - name: Sign and verify every package with APT
+        if: steps.current.outputs.matches == 'true'
+        env:
+          APT_SIGNING_PRIVATE_KEY: ${{ secrets.APT_SIGNING_PRIVATE_KEY }}
+          APT_SIGNING_PASSPHRASE: ${{ secrets.APT_SIGNING_PASSPHRASE }}
+          APT_SIGNING_KEY_FINGERPRINT: ${{ vars.APT_SIGNING_KEY_FINGERPRINT }}
+        run: tools/build_apt_repository.sh "$RUNNER_TEMP/collected" "$RUNNER_TEMP/apt-public"
+      - uses: actions/configure-pages@v6
+        if: steps.current.outputs.matches == 'true'
+      - uses: actions/upload-pages-artifact@v5
+        if: steps.current.outputs.matches == 'true'
+        with:
+          path: ${{ runner.temp }}/apt-public
+      - name: Recheck current main
+        id: deployable
+        if: steps.current.outputs.matches == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          latest=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha')
+          if [[ "$latest" == "$GITHUB_SHA" ]]; then
+            echo 'matches=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'matches=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Deploy repository
+        id: deployment
+        if: steps.deployable.outputs.matches == 'true'
+        uses: actions/deploy-pages@v5

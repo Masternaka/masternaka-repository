@@ -1,0 +1,5 @@
+{
+  "apps": [
+    {"repository": "Masternaka/MintTweaks", "package": "minttweaks", "architecture": "all"}
+  ]
+}
