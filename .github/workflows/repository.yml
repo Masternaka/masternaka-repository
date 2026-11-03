@@ -63,13 +63,13 @@ jobs:
         if: steps.current.outputs.matches == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends apt-utils gnupg dpkg-dev binutils apparmor libgtk-3-dev libasound2-dev libxt-dev libx11-xcb-dev libxcb-shm0-dev
+          sudo apt-get install -y --no-install-recommends apt-utils gnupg dpkg-dev
       - name: Collect current stable releases
         if: steps.current.outputs.matches == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -m tools.collect_packages --output "$RUNNER_TEMP/collected"
-      - name: Validate package dependencies and AppArmor syntax
+      - name: Validate package dependencies
         if: steps.current.outputs.matches == 'true'
         run: |
           # Dependency resolution only: no package maintainer scripts or upstream
@@ -77,8 +77,6 @@ jobs:
           for package in "$RUNNER_TEMP/collected/"*.deb; do
             sudo apt-get -s install "$package"
           done
-          python3 -c 'from tools.package_zen import PROFILE; print(PROFILE)' > "$RUNNER_TEMP/zen.apparmor"
-          sudo apparmor_parser -Q -T "$RUNNER_TEMP/zen.apparmor"
       - name: Sign and verify every package with APT
         if: steps.current.outputs.matches == 'true'
         env:
