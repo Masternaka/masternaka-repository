@@ -39,9 +39,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
+      actions: read
       contents: read
       pages: write
       id-token: write
+    env:
+      PAGES_ARTIFACT_NAME: github-pages-${{ github.run_attempt }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -87,9 +90,34 @@ jobs:
       - uses: actions/configure-pages@v6
         if: steps.current.outputs.matches == 'true'
       - uses: actions/upload-pages-artifact@v5
+        id: upload
         if: steps.current.outputs.matches == 'true'
         with:
+          name: ${{ env.PAGES_ARTIFACT_NAME }}
           path: ${{ runner.temp }}/apt-public
+      - name: Wait for the uploaded Pages artifact
+        if: steps.current.outputs.matches == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PAGES_ARTIFACT_ID: ${{ steps.upload.outputs.artifact_id }}
+        run: |
+          # The artifact can take a few seconds to become visible after upload.
+          if [[ -z "$PAGES_ARTIFACT_ID" ]]; then
+            echo "::error::Pages upload did not return an artifact ID."
+            exit 1
+          fi
+          for delay in 2 4 8 16; do
+            sleep "$delay"
+            artifacts=$(gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/artifacts?name=$PAGES_ARTIFACT_NAME" \
+              --jq '.artifacts[] | select(.expired == false) | .id')
+            if [[ "$artifacts" == "$PAGES_ARTIFACT_ID" ]]; then
+              exit 0
+            fi
+            echo "Waiting for Pages artifact $PAGES_ARTIFACT_ID to appear in this run."
+          done
+          echo "::error::The uploaded Pages artifact $PAGES_ARTIFACT_ID is still unavailable or ambiguous."
+          exit 1
       - name: Recheck current main
         id: deployable
         if: steps.current.outputs.matches == 'true'
@@ -107,3 +135,5 @@ jobs:
         id: deployment
         if: steps.deployable.outputs.matches == 'true'
         uses: actions/deploy-pages@v5
+        with:
+          artifact_name: ${{ env.PAGES_ARTIFACT_NAME }}
